@@ -6,7 +6,6 @@ Automated Outlook inbox triage — reviews messages and applies the correct cate
 
 | Category | When to Apply |
 |---|---|
-| **26-27 Applicant Follow Up** | Applicant/interview/recruitment for 2026-27 cycle |
 | **1: Needs Response** | Direct questions, approval requests, scheduling asks |
 | **3: Waiting for Reply** | User already acted, waiting on someone else |
 | **4: Done** | Thread complete, no further action needed |

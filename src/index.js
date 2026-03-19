@@ -79,7 +79,7 @@ async function main() {
         }
 
         // Step 4: Classify
-        const decision = classifyEmail({
+        const decision = await classifyEmail({
           subject: msg.subject,
           sender: msg.sender,
           body,

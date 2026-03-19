@@ -1,4 +1,5 @@
 node_modules/
 browser-data/
+browser-data-edge/
 logs/
 .env

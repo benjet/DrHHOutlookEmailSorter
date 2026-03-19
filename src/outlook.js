@@ -6,6 +6,7 @@
  */
 
 const { chromium } = require('playwright');
+const fs = require('fs');
 const path = require('path');
 
 const SELECTORS = {
@@ -34,7 +35,7 @@ const SELECTORS = {
 class OutlookAutomation {
   constructor(config = {}) {
     this.outlookUrl = config.outlookUrl || 'https://outlook.office.com/mail/inbox';
-    this.userDataDir = config.userDataDir || path.join(__dirname, '..', 'browser-data');
+    this.userDataDir = config.userDataDir || path.join(__dirname, '..', 'browser-data-chromium');
     this.browser = null;
     this.context = null;
     this.page = null;
@@ -45,20 +46,28 @@ class OutlookAutomation {
    */
   async launch() {
     console.log('🌐 Launching browser...');
-    
+
     this.context = await chromium.launchPersistentContext(this.userDataDir, {
       headless: false,
       viewport: { width: 1400, height: 900 },
-      args: ['--disable-blink-features=AutomationControlled'],
+      args: [
+        '--disable-gpu',
+        '--disable-gpu-compositing',
+        '--disable-software-rasterizer',
+        '--in-process-gpu',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+      ],
     });
-    
+
     this.page = this.context.pages()[0] || await this.context.newPage();
-    
+
     console.log(`📧 Navigating to Outlook Inbox...`);
     await this.page.goto(this.outlookUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    
+
     // Wait for user to log in if needed
     await this._waitForInboxReady();
+
     
     console.log('✅ Inbox loaded and ready.\n');
     return this.page;
@@ -95,8 +104,37 @@ class OutlookAutomation {
   async getInboxMessages(batchSize = 10) {
     console.log(`📋 Scanning inbox for up to ${batchSize} messages...`);
     
-    // Get all message row elements
-    const messageElements = await this.page.$$('[role="listbox"] > div, [data-convid], [aria-label*="mail"]');
+    const selector = '[role="listbox"] > div, [data-convid], [aria-label*="mail"]';
+    let messageElements = await this.page.$$(selector);
+    
+    // Scroll down to load more messages if needed
+    let previousCount = 0;
+    let attempts = 0;
+    
+    while (messageElements.length < batchSize && attempts < 15) {
+      previousCount = messageElements.length;
+      
+      // Scroll to the last element
+      if (messageElements.length > 0) {
+        const lastEl = messageElements[messageElements.length - 1];
+        await lastEl.evaluate(node => node.scrollIntoView()).catch(() => {});
+        // Press PageDown to trigger web loads
+        await this.page.keyboard.press('PageDown');
+      }
+      
+      await this.page.waitForTimeout(1500);
+      messageElements = await this.page.$$(selector);
+      
+      if (messageElements.length === previousCount) {
+        attempts++;
+      } else {
+        attempts = 0;
+      }
+      
+      if (messageElements.length > previousCount) {
+        console.log(`  ... loaded ${messageElements.length} messages`);
+      }
+    }
     
     const messages = [];
     const limit = Math.min(messageElements.length, batchSize);
@@ -318,6 +356,9 @@ class OutlookAutomation {
   async close() {
     if (this.context) {
       await this.context.close();
+    }
+    if (this.browser) {
+      await this.browser.close();
     }
   }
 }
