@@ -1,44 +1,31 @@
-/**
- * Outlook Web Automation
- * 
- * All browser interactions with Outlook Web (outlook.office.com).
- * Uses Playwright to navigate, read messages, and apply categories.
- */
-
 const { chromium } = require('playwright');
-const fs = require('fs');
 const path = require('path');
 
-const SELECTORS = {
-  // Message list
-  messageList: '[role="list"]',
-  messageRow: '[role="listitem"]',
-  messageSubject: '[data-testid="SubjectLine"]',
-  messageSender: '[data-testid="SenderName"]',
-  messagePreview: '[data-testid="PreviewText"]',
-  
-  // Read/unread indicators
-  unreadIndicator: '[aria-label*="Unread"]',
-  
-  // Message reading pane / full view
-  messageBody: '[role="document"]',
-  messageBodyAlt: '.ReadMsgBody, .ReadingPaneContentsContainer, [aria-label="Message body"]',
-  
-  // Category UI (right-click context menu)
-  contextMenu: '[role="menu"]',
-  categorizeOption: '[role="menuitem"]',
-  
-  // Back navigation
-  backButton: 'button[aria-label="Back"]',
-};
-
-class OutlookAutomation {
+/**
+ * Core Outlook interaction engine.
+ */
+class OutlookDriver {
   constructor(config = {}) {
     this.outlookUrl = config.outlookUrl || 'https://outlook.office.com/mail/inbox';
     this.userDataDir = config.userDataDir || path.join(__dirname, '..', 'browser-data-chromium');
     this.browser = null;
     this.context = null;
     this.page = null;
+  }
+
+  /**
+   * Initialize the driver (alias for login)
+   */
+  async init() {
+    return this.login();
+  }
+
+  /**
+   * Launch browser and handle login
+   */
+  async login() {
+    await this.launch();
+    return true;
   }
 
   /**
@@ -68,9 +55,17 @@ class OutlookAutomation {
     // Wait for user to log in if needed
     await this._waitForInboxReady();
 
-    
     console.log('✅ Inbox loaded and ready.\n');
     return this.page;
+  }
+
+  /**
+   * Navigate to the inbox
+   */
+  async navigateToInbox() {
+    console.log(`📧 Navigating to Outlook Inbox...`);
+    await this.page.goto(this.outlookUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await this._waitForInboxReady();
   }
 
   /**
@@ -79,11 +74,11 @@ class OutlookAutomation {
   async _waitForInboxReady() {
     console.log('⏳ Waiting for inbox to load (log in if prompted)...');
     
-    // Wait up to 5 minutes for the message list to appear (user may need to log in)
+    // Wait up to 30 seconds for the message list to appear
     try {
       await this.page.waitForSelector(
-        '[role="listbox"], [role="list"], [data-testid="MailList"]',
-        { timeout: 300000 }
+        'div[role="option"], [role="listbox"] > div',
+        { timeout: 30000 }
       );
     } catch {
       // Try alternative: look for any message items
@@ -101,10 +96,11 @@ class OutlookAutomation {
    * Get list of visible inbox messages (metadata only)
    * @param {number} batchSize - Max messages to return
    */
-  async getInboxMessages(batchSize = 10) {
+  async getInboxMessages(batchSize) {
     console.log(`📋 Scanning inbox for up to ${batchSize} messages...`);
     
-    const selector = '[role="listbox"] > div, [data-convid], [aria-label*="mail"]';
+    // Updated selector based on UI inspection
+    const selector = 'div[role="option"]';
     let messageElements = await this.page.$$(selector);
     
     // Scroll down to load more messages if needed
@@ -122,7 +118,8 @@ class OutlookAutomation {
         await this.page.keyboard.press('PageDown');
       }
       
-      await this.page.waitForTimeout(1500);
+      // Optimized wait
+      await this.page.waitForTimeout(500);
       messageElements = await this.page.$$(selector);
       
       if (messageElements.length === previousCount) {
@@ -167,32 +164,49 @@ class OutlookAutomation {
                  node.querySelector('.lvv2Unread') !== null ||
                  window.getComputedStyle(node).fontWeight >= 600;
         }).catch(() => false);
-        
-        // Check existing category
-        const existingCategory = await el.$eval(
-          '[data-testid="CategoryContainer"] span, .categoryLabelText',
-          node => node.textContent?.trim() || null
-        ).catch(() => null);
+
+        // Extract categories
+        const categories = await el.$$eval(
+          'div.O6uB9', 
+          nodes => nodes.map(n => n.textContent?.trim()).filter(Boolean)
+        ).catch(() => []);
         
         if (subject || sender) {
           messages.push({
-            index: i,
-            element: el,
             subject,
             sender,
             preview,
             isUnread,
-            existingCategory,
+            categories,
+            element: el,
           });
         }
       } catch (err) {
-        // Skip messages that can't be parsed
         continue;
       }
     }
     
-    console.log(`  Found ${messages.length} messages to process.\n`);
     return messages;
+  }
+
+  /**
+   * Get the next email details and content
+   */
+  async getNextEmail() {
+    const messages = await this.getInboxMessages(1);
+    if (!messages || messages.length === 0) return null;
+    
+    const msg = messages[0];
+    const content = await this.openMessage(msg.element);
+    
+    return {
+      subject: msg.subject,
+      sender: msg.sender,
+      isUnread: msg.isUnread,
+      categories: msg.categories,
+      content: content,
+      element: msg.element
+    };
   }
 
   /**
@@ -201,11 +215,9 @@ class OutlookAutomation {
    * @returns {string} Full message body text
    */
   async openMessage(messageElement) {
-    // Click the message to open it in reading pane or full view
     await messageElement.click();
-    await this.page.waitForTimeout(1500);
+    await this.page.waitForTimeout(500);
     
-    // Try to get body text from reading pane
     let bodyText = '';
     
     try {
@@ -214,7 +226,6 @@ class OutlookAutomation {
         node => node.innerText?.trim() || node.textContent?.trim() || ''
       );
     } catch {
-      // Fallback: try iframe-based body
       try {
         const frame = this.page.frames().find(f => f.url().includes('projection'));
         if (frame) {
@@ -229,124 +240,111 @@ class OutlookAutomation {
   }
 
   /**
-   * Get the existing category of the currently open message
+   * Move the current message to a specific folder (category)
    */
-  async getOpenMessageCategory() {
+  async moveToFolder(category) {
     try {
-      return await this.page.$eval(
-        '[data-testid="CategoryContainer"] span, .categoryLabelText, [aria-label*="Category"]',
-        node => node.textContent?.trim() || null
-      );
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Apply a category to the currently selected message via right-click menu
-   * @param {ElementHandle} messageElement - The message list item element
-   * @param {string} categoryName - The category to apply
-   */
-  async applyCategory(messageElement, categoryName) {
-    // Right-click the message to open context menu
-    await messageElement.click({ button: 'right' });
-    await this.page.waitForTimeout(800);
-    
-    // Look for "Categorize" in the context menu
-    const categorizeBtn = await this.page.$(
-      '[role="menuitem"]:has-text("Categorize"), [aria-label*="Categorize"]'
-    );
-    
-    if (!categorizeBtn) {
-      // Try the toolbar categorize button instead
-      const toolbarBtn = await this.page.$(
-        'button[aria-label*="Categorize"], [data-testid="Categorize"]'
-      );
-      if (toolbarBtn) {
-        await toolbarBtn.click();
+      console.log(`      📁 Moving to "${category}"...`);
+      
+      // Look for "Move to" button in the toolbar
+      const moveButtonSelector = 'button[aria-label^="Move to"], button[name*="Move to"], [data-testid="MoveToButton"]';
+      await this.page.waitForSelector(moveButtonSelector, { timeout: 10000 });
+      await this.page.click(moveButtonSelector);
+      
+      // Wait for the dropdown and search box
+      const searchBoxSelector = 'input[placeholder*="Search for a folder"], input[aria-label*="Search"], [role="combobox"] input';
+      await this.page.waitForSelector(searchBoxSelector, { timeout: 5000 });
+      
+      // Clear and fill
+      await this.page.click(searchBoxSelector);
+      await this.page.keyboard.down('Control');
+      await this.page.keyboard.press('a');
+      await this.page.keyboard.up('Control');
+      await this.page.keyboard.press('Backspace');
+      await this.page.fill(searchBoxSelector, category);
+      
+      // Wait for search results or a message saying no results
+      await this.page.waitForTimeout(1500);
+      
+      // Check if there are results
+      const resultSelector = `[role="listbox"] [role="option"], .ms-ContextualMenu-item button`;
+      const results = await this.page.$$(resultSelector);
+      
+      if (results.length > 0) {
+        // Just press Enter on the first result usually works well
+        await this.page.keyboard.press('Enter');
+        console.log(`      ✅ Successfully triggered move to "${category}"`);
+        
+        // Wait for the move action to complete and UI to update
+        await this.page.waitForTimeout(2000);
+        return true;
       } else {
-        throw new Error('Could not find Categorize option');
+        console.warn(`      ⚠️ Folder "${category}" not found in search results.`);
+        // Close the menu
+        await this.page.keyboard.press('Escape');
+        return false;
       }
-    } else {
-      await categorizeBtn.click();
+    } catch (error) {
+      console.error(`      ❌ Error moving to folder "${category}":`, error.message);
+      
+      // Escape if menu is stuck open
+      await this.page.keyboard.press('Escape').catch(() => {});
+      await this.page.keyboard.press('Escape').catch(() => {});
+      return false;
     }
-    
-    await this.page.waitForTimeout(600);
-    
-    // Click the specific category
-    const categoryBtn = await this.page.$(
-      `[role="menuitem"]:has-text("${categoryName}"), [aria-label*="${categoryName}"]`
-    );
-    
-    if (!categoryBtn) {
-      throw new Error(`Could not find category "${categoryName}" in menu`);
-    }
-    
-    await categoryBtn.click();
-    await this.page.waitForTimeout(500);
-    
-    // Close any remaining menus by pressing Escape
-    await this.page.keyboard.press('Escape');
-    await this.page.waitForTimeout(300);
   }
 
   /**
-   * Remove all categories from the currently selected message
-   * @param {ElementHandle} messageElement
+   * Assign a category to the current message
+   * @param {string} categoryName
    */
-  async removeCategory(messageElement) {
-    // Right-click the message
-    await messageElement.click({ button: 'right' });
-    await this.page.waitForTimeout(800);
+  async setCategory(categoryName) {
+    if (!categoryName) return false;
     
-    // Find Categorize menu
-    const categorizeBtn = await this.page.$(
-      '[role="menuitem"]:has-text("Categorize"), [aria-label*="Categorize"]'
-    );
-    
-    if (categorizeBtn) {
-      await categorizeBtn.click();
-      await this.page.waitForTimeout(600);
+    try {
+      console.log(`      🏷️ Setting category: ${categoryName}...`);
       
-      // Look for "Clear all categories" option
-      const clearBtn = await this.page.$(
-        '[role="menuitem"]:has-text("Clear"), [aria-label*="Clear"]'
-      );
+      // Look for "Categorize" button
+      const categorizeButtonSelector = 'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
+      await this.page.waitForSelector(categorizeButtonSelector, { timeout: 5000 });
+      await this.page.click(categorizeButtonSelector);
       
-      if (clearBtn) {
-        await clearBtn.click();
-        await this.page.waitForTimeout(500);
+      // Wait for the menu
+      await this.page.waitForTimeout(1000);
+      
+      // Look for the specific category in the menu
+      // Outlook categories are often in a list with the name
+      const categoryItemSelector = `button[role="menuitem"] span:has-text("${categoryName}"), [role="menuitem"] [title="${categoryName}"]`;
+      const categoryItem = await this.page.$(categoryItemSelector);
+      
+      if (categoryItem) {
+        await categoryItem.click();
+        console.log(`      ✅ Applied category "${categoryName}"`);
+        return true;
+      } else {
+        console.warn(`      ⚠️ Category "${categoryName}" not found in the menu.`);
+        await this.page.keyboard.press('Escape');
+        return false;
       }
+    } catch (error) {
+      console.error(`      ❌ Error setting category "${categoryName}":`, error.message);
+      await this.page.keyboard.press('Escape').catch(() => {});
+      return false;
     }
-    
-    // Close any remaining menus
-    await this.page.keyboard.press('Escape');
-    await this.page.waitForTimeout(300);
   }
 
   /**
-   * Mark the currently open/selected message as unread
-   * @param {ElementHandle} messageElement
+   * Mark the current message as unread
    */
-  async markAsUnread(messageElement) {
-    // Right-click and find "Mark as unread"
-    await messageElement.click({ button: 'right' });
-    await this.page.waitForTimeout(600);
-    
-    const unreadBtn = await this.page.$(
-      '[role="menuitem"]:has-text("Mark as unread"), [aria-label*="Mark as unread"]'
-    );
-    
-    if (unreadBtn) {
-      await unreadBtn.click();
-      await this.page.waitForTimeout(300);
-    } else {
-      // Try keyboard shortcut (Ctrl+U)
-      await this.page.keyboard.press('Escape');
-      await messageElement.click();
-      await this.page.waitForTimeout(200);
-      await this.page.keyboard.press('Control+u');
-      await this.page.waitForTimeout(300);
+  async markAsUnread() {
+    try {
+      const unreadButtonSelector = 'button[aria-label="Mark as unread"]';
+      await this.page.click(unreadButtonSelector);
+      await this.page.waitForTimeout(1000);
+      return true;
+    } catch (error) {
+      console.error('Error marking as unread:', error);
+      return false;
     }
   }
 
@@ -357,10 +355,7 @@ class OutlookAutomation {
     if (this.context) {
       await this.context.close();
     }
-    if (this.browser) {
-      await this.browser.close();
-    }
   }
 }
 
-module.exports = OutlookAutomation;
+module.exports = OutlookDriver;

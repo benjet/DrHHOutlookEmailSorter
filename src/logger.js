@@ -27,6 +27,37 @@ class Logger {
     };
   }
 
+  /**
+   * Log info message to console
+   */
+  info(...args) {
+    console.log('ℹ️', ...args);
+  }
+
+  /**
+   * Log warning message to console
+   */
+  warn(...args) {
+    console.warn('⚠️', ...args);
+  }
+
+  /**
+   * Log error message to console
+   */
+  error(...args) {
+    console.error('❌', ...args);
+  }
+
+  /**
+   * Log notice message to console
+   */
+  notice(...args) {
+    console.log('🔔', ...args);
+  }
+
+  /**
+   * Log and record a classification decision
+   */
   log(entry) {
     const record = {
       timestamp: new Date().toISOString(),
@@ -52,7 +83,7 @@ class Logger {
 
     console.log(
       `  ${icon} [${record.index}] ${entry.subject?.substring(0, 60) || '(no subject)'}` +
-      `\n     ${entry.action.toUpperCase()}: ${entry.reason || ''}`
+      `\n     ${entry.action?.toUpperCase() || 'ACTION'}: ${entry.reason || entry.category || ''}`
     );
   }
 
@@ -80,4 +111,5 @@ class Logger {
   }
 }
 
-module.exports = Logger;
+// Export a singleton instance
+module.exports = new Logger();

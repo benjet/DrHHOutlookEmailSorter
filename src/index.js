@@ -1,169 +1,102 @@
+const OutlookDriver = require('./outlook');
+const config = require('./env-load');
+const { classify } = require('./classifier');
+const logger = require('./logger');
+
 /**
- * Outlook Inbox Category Sorter — Main Orchestrator
- * 
- * Entry point that ties together classification, Outlook automation, and logging.
- * Run with: npm start (live) or npm run dry-run (preview only)
+ * Main application entry point
+ * Coordinates the email sorting process using AI classification
  */
-
-require('dotenv').config();
-const OutlookAutomation = require('./outlook');
-const { classifyEmail, APPROVED_CATEGORIES } = require('./classifier');
-const Logger = require('./logger');
-
-// Configuration from .env
-const CONFIG = {
-  batchSize: parseInt(process.env.BATCH_SIZE || '10', 10),
-  outlookUrl: process.env.OUTLOOK_URL || 'https://outlook.office.com/mail/inbox',
-  dryRun: process.env.DRY_RUN === 'true',
-  userDataDir: process.env.USER_DATA_DIR || './browser-data',
-  messageDelay: parseInt(process.env.MESSAGE_DELAY || '1500', 10),
-};
-
 async function main() {
-  console.log('\n' + '═'.repeat(60));
-  console.log('  📬 Outlook Inbox Category Sorter');
-  console.log('═'.repeat(60));
-  console.log(`  Mode:       ${CONFIG.dryRun ? '🔍 DRY RUN (no changes)' : '⚡ LIVE (applying categories)'}`);
-  console.log(`  Batch size: ${CONFIG.batchSize}`);
-  console.log(`  Delay:      ${CONFIG.messageDelay}ms between messages`);
-  console.log('═'.repeat(60) + '\n');
-
-  const logger = new Logger();
-  const outlook = new OutlookAutomation({
-    outlookUrl: CONFIG.outlookUrl,
-    userDataDir: CONFIG.userDataDir,
-  });
-
+  const driver = new OutlookDriver();
+  
   try {
-    // Step 1: Launch browser and load inbox
-    await outlook.launch();
-
-    // Step 2: Get inbox messages
-    const messages = await outlook.getInboxMessages(CONFIG.batchSize);
-
-    if (messages.length === 0) {
-      console.log('📭 No messages found in inbox. Exiting.');
-      await outlook.close();
+    logger.info('🚀 Starting DrHH Email Sorter...');
+    await driver.init();
+    
+    // Login if necessary
+    const loggedIn = await driver.login();
+    if (!loggedIn) {
+      logger.error('❌ Failed to login. Please check your credentials or MFA status.');
       return;
     }
 
-    // Step 3: Process each message
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      console.log(`\n${'─'.repeat(50)}`);
-      console.log(`  Message ${i + 1}/${messages.length}`);
-      console.log(`  Subject: ${msg.subject?.substring(0, 70) || '(no subject)'}`);
-      console.log(`  From:    ${msg.sender}`);
-      console.log(`  Status:  ${msg.isUnread ? '📩 Unread' : '📨 Read'}`);
-      console.log(`  Current: ${msg.existingCategory || '(none)'}`);
-
-      try {
-        // Step 2: Capture message state
-        const wasUnread = msg.isUnread;
-
-        // Step 3: Open message to read full content
-        let body = '';
-        try {
-          body = await outlook.openMessage(msg.element);
-        } catch (err) {
-          console.log(`  ⚠️ Could not open message body, using preview only.`);
-          body = msg.preview || '';
-        }
-
-        // Also check category from the open message view
-        let existingCategory = msg.existingCategory;
-        if (!existingCategory) {
-          try {
-            existingCategory = await outlook.getOpenMessageCategory();
-          } catch {}
-        }
-
-        // Step 4: Classify
-        const decision = await classifyEmail({
-          subject: msg.subject,
-          sender: msg.sender,
-          body,
-          preview: msg.preview,
-          existingCategory,
-        });
-
-        console.log(`  Decision: ${decision.action} → ${decision.category || '(none)'} [${decision.confidence}]`);
-
-        // Step 4b: Apply, update, or remove category
-        if (!CONFIG.dryRun) {
-          if (decision.action === 'apply' || decision.action === 'update') {
-            // If updating, first remove old category
-            if (decision.action === 'update' && existingCategory) {
-              await outlook.removeCategory(msg.element);
-              await delay(500);
-            }
-            await outlook.applyCategory(msg.element, decision.category);
-          } else if (decision.action === 'remove') {
-            await outlook.removeCategory(msg.element);
-          }
-          // 'skip' = no action needed
-
-          // Step 5: Restore unread state if it was changed
-          if (wasUnread) {
-            await delay(300);
-            await outlook.markAsUnread(msg.element);
-          }
-        } else {
-          console.log(`  🔍 DRY RUN — no changes applied.`);
-        }
-
-        // Log the decision
-        logger.log({
-          subject: msg.subject,
-          sender: msg.sender,
-          wasUnread,
-          previousCategory: existingCategory || null,
-          newCategory: decision.category,
-          action: decision.action,
-          confidence: decision.confidence,
-          reason: decision.reason,
-          dryRun: CONFIG.dryRun,
-        });
-
-      } catch (err) {
-        console.error(`  ❌ Error processing message: ${err.message}`);
-        logger.log({
-          subject: msg.subject,
-          sender: msg.sender,
-          action: 'error',
-          reason: err.message,
-          dryRun: CONFIG.dryRun,
-        });
-      }
-
-      // Step 7: Delay before next message
-      if (i < messages.length - 1) {
-        await delay(CONFIG.messageDelay);
-      }
+    logger.info('✅ Logged in successfully.');
+    
+    // Refresh/navigate to inbox
+    await driver.page.goto(config.outlook.url, { waitUntil: 'networkidle2' });
+    
+    // Search for uncategorized emails if configured
+    if (config.sorting.processUncategorizedOnly) {
+      logger.info('🔍 Searching for emails that need sorting (uncategorized)...');
+      await driver.page.waitForSelector('input[aria-label="Search"]');
+      await driver.page.fill('input[aria-label="Search"]', 'category:none');
+      await driver.page.keyboard.press('Enter');
+      await driver.page.waitForTimeout(3000); // Wait for search results
     }
 
-    // Summary
-    logger.printSummary();
+    let processedCount = 0;
+    let failedCount = 0;
+    const maxMessages = config.sorting.maxMessages;
 
-    // Keep browser open for user to review
-    console.log('🖥️  Browser left open for review. Press Ctrl+C to exit.\n');
-    
-    // Wait indefinitely (user will Ctrl+C when done)
-    await new Promise(() => {});
+    // Loop through emails
+    while (processedCount < maxMessages) {
+      logger.info(`\n--- Processing Email #${processedCount + 1} / ${maxMessages} ---`);
+      
+      const email = await driver.getNextEmail();
+      
+      if (!email) {
+        logger.info('🏁 No more emails found matching criteria.');
+        break;
+      }
+
+      logger.info(`📧 From: ${email.sender}`);
+      logger.info(`📝 Subject: ${email.subject}`);
+
+      // Categorize using Gemini AI
+      logger.info('🤖 Classifying email with AI...');
+      const targetFolder = await classify(email.subject, email.content);
+      
+      if (targetFolder === 'Unknown' || !targetFolder) {
+        logger.warn(`🛑 Could not determine clear category for: "${email.subject}". Skipping.`);
+        // Just move to the next one, maybe by clicking it or escaping
+        await driver.page.keyboard.press('Escape');
+        processedCount++;
+        continue;
+      }
+
+      logger.info(`🎯 AI identified Category: ${targetFolder}`);
+      
+      if (config.sorting.dryRun) {
+        logger.info(`[DRY RUN] Would move to: ${targetFolder}`);
+        processedCount++;
+        continue;
+      }
+
+      const moved = await driver.moveToFolder(targetFolder);
+      if (moved) {
+        logger.info(`✅ Successfully sorted to ${targetFolder}`);
+        processedCount++;
+      } else {
+        logger.warn(`⚠️ Failed to move email to ${targetFolder}. Skipping...`);
+        failedCount++;
+        await driver.page.keyboard.press('Escape'); 
+      }
+
+      // Small delay between actions
+      await driver.page.waitForTimeout(1500);
+    }
+
+    logger.info(`\n✨ Sorting Process Completed!`);
+    logger.notice(`📊 Total Processed: ${processedCount}`);
+    logger.notice(`❌ Failed: ${failedCount}`);
 
   } catch (err) {
-    console.error(`\n💥 Fatal error: ${err.message}`);
-    console.error(err.stack);
-    logger.printSummary();
+    logger.error('💥 Critical Error in Main Loop:', err);
+  } finally {
+    logger.info('🛑 Closing driver...');
+    await driver.close();
   }
 }
 
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Run
-main().catch(err => {
-  console.error('Unhandled error:', err);
-  process.exit(1);
-});
+main();

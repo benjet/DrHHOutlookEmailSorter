@@ -1,5 +1,7 @@
 node_modules/
-browser-data/
-browser-data-edge/
+browser-data*/
 logs/
 .env
+config.json
+*.md
+!README.md
