@@ -1,9 +1,3 @@
-/**
- * Action Logger
- * 
- * Records all classification decisions to a JSON log file for audit.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -15,49 +9,24 @@ class Logger {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    this.logPath = path.join(logsDir, `sort_log_${timestamp}.json`);
+    this.logPath = path.join(logsDir, `sort_log_${timestamp}.md`);
     this.entries = [];
-    this.stats = {
-      total: 0,
-      applied: 0,
-      updated: 0,
-      removed: 0,
-      skipped: 0,
-      errors: 0,
-    };
+    this.stats = { total: 0, applied: 0, skipped: 0, errors: 0 };
+    this._headerWritten = false;
   }
 
-  /**
-   * Log info message to console
-   */
   info(...args) {
-    console.log('ℹ️', ...args);
+    console.log(...args);
   }
 
-  /**
-   * Log warning message to console
-   */
   warn(...args) {
-    console.warn('⚠️', ...args);
+    console.warn('WARNING:', ...args);
   }
 
-  /**
-   * Log error message to console
-   */
   error(...args) {
-    console.error('❌', ...args);
+    console.error('ERROR:', ...args);
   }
 
-  /**
-   * Log notice message to console
-   */
-  notice(...args) {
-    console.log('🔔', ...args);
-  }
-
-  /**
-   * Log and record a classification decision
-   */
   log(entry) {
     const record = {
       timestamp: new Date().toISOString(),
@@ -68,48 +37,54 @@ class Logger {
     this.stats.total++;
 
     if (entry.action === 'apply') this.stats.applied++;
-    else if (entry.action === 'update') this.stats.updated++;
-    else if (entry.action === 'remove') this.stats.removed++;
     else if (entry.action === 'skip') this.stats.skipped++;
     else if (entry.action === 'error') this.stats.errors++;
 
-    // Write after each entry for safety
-    this._flush();
+    this._appendToFile(record);
 
-    // Console output
-    const icon = {
-      apply: '✅', update: '🔄', remove: '❌', skip: '⏭️', error: '⚠️',
-    }[entry.action] || '•';
-
+    const icon = { apply: '+', skip: '-', error: '!' }[entry.action] || ' ';
     console.log(
-      `  ${icon} [${record.index}] ${entry.subject?.substring(0, 60) || '(no subject)'}` +
-      `\n     ${entry.action?.toUpperCase() || 'ACTION'}: ${entry.reason || entry.category || ''}`
+      `  [${icon}] #${record.index} ${(entry.subject || '(no subject)').substring(0, 60)}` +
+      `\n      ${(entry.action || '').toUpperCase()}: ${entry.category || ''} ${entry.reason ? '— ' + entry.reason : ''}`
     );
   }
 
-  _flush() {
-    const output = {
-      runTimestamp: this.entries[0]?.timestamp,
-      stats: this.stats,
-      entries: this.entries,
-    };
-    fs.writeFileSync(this.logPath, JSON.stringify(output, null, 2));
+  _appendToFile(record) {
+    if (!this._headerWritten) {
+      const header = `# Sort Log — ${record.timestamp}\n\n` +
+        '| # | Action | Subject | Sender | Category | Reason |\n' +
+        '|---|--------|---------|--------|----------|--------|\n';
+      fs.writeFileSync(this.logPath, header);
+      this._headerWritten = true;
+    }
+
+    const esc = (s) => (s || '').replace(/\|/g, '\\|').replace(/\n/g, ' ').substring(0, 80);
+    const row = `| ${record.index} | ${esc(record.action)} | ${esc(record.subject)} | ${esc(record.sender)} | ${esc(record.category)} | ${esc(record.reason)} |\n`;
+    fs.appendFileSync(this.logPath, row);
   }
 
   printSummary() {
-    console.log('\n' + '═'.repeat(60));
-    console.log('  SORT COMPLETE — Summary');
-    console.log('═'.repeat(60));
-    console.log(`  Total processed:  ${this.stats.total}`);
-    console.log(`  Applied:          ${this.stats.applied}`);
-    console.log(`  Updated:          ${this.stats.updated}`);
-    console.log(`  Removed:          ${this.stats.removed}`);
-    console.log(`  Skipped:          ${this.stats.skipped}`);
-    console.log(`  Errors:           ${this.stats.errors}`);
-    console.log(`\n  Log saved to: ${this.logPath}`);
-    console.log('═'.repeat(60) + '\n');
+    const summary = '\n' + '='.repeat(50) +
+      '\n  SORT COMPLETE\n' +
+      '='.repeat(50) +
+      `\n  Total:   ${this.stats.total}` +
+      `\n  Applied: ${this.stats.applied}` +
+      `\n  Skipped: ${this.stats.skipped}` +
+      `\n  Errors:  ${this.stats.errors}` +
+      `\n\n  Log: ${this.logPath}\n` +
+      '='.repeat(50) + '\n';
+    console.log(summary);
+
+    // Append summary to log file
+    if (this._headerWritten) {
+      const mdSummary = `\n## Summary\n\n` +
+        `- **Total**: ${this.stats.total}\n` +
+        `- **Applied**: ${this.stats.applied}\n` +
+        `- **Skipped**: ${this.stats.skipped}\n` +
+        `- **Errors**: ${this.stats.errors}\n`;
+      fs.appendFileSync(this.logPath, mdSummary);
+    }
   }
 }
 
-// Export a singleton instance
 module.exports = new Logger();
