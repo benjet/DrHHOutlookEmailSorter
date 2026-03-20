@@ -67,71 +67,57 @@ class OutlookDriver {
    * Ensure we're viewing the inbox (no search filter needed).
    */
   async _ensureSortOrder() {
-    this.logger.info('Ensuring reverse chronological order (newest first)...');
     try {
-      // Look for the Filter/Sort button. Outlook often uses a button with "Filter" or a sort icon.
-      // A common selector for the sort/filter button in the message list header:
+      console.log('Ensuring reverse chronological order (newest first)...');
       const filterButton = await this.page.$('button[data-automation-id="FilterButton"]');
       if (filterButton) {
         await filterButton.click();
-        await this.page.waitForTimeout(1000);
+        await delay(1000);
 
-        // Look for "Sort" in the menu
         const sortOption = await this.page.$('button[aria-label="Sort"], span:text("Sort")');
         if (sortOption) {
           await sortOption.click();
-          await this.page.waitForTimeout(500);
+          await delay(500);
         }
 
-        // Look for "Newest on top"
         const newestOnTop = await this.page.$('button[aria-label="Newest on top"], span:text("Newest on top")');
         if (newestOnTop) {
           const isSelected = await newestOnTop.evaluate(el => el.getAttribute('aria-checked') === 'true' || el.classList.contains('is-checked'));
           if (!isSelected) {
             await newestOnTop.click();
-            this.logger.info('Set sort order to "Newest on top".');
-            await this.page.waitForTimeout(2000);
+            console.log('Set sort order to "Newest on top".');
+            await delay(2000);
           } else {
-            this.logger.info('Sort order is already "Newest on top".');
-            // Click filter button again to close menu if still open
-            await filterButton.click();
+            console.log('Sort order is already "Newest on top".');
+            await filterButton.click(); // Close menu
           }
         } else {
-          this.logger.warn('Could not find "Newest on top" option in sort menu.');
-          // Click filter button again to close menu
-          await filterButton.click();
+          await filterButton.click(); // Close menu
         }
-      } else {
-        this.logger.warn('Could not find Filter/Sort button. Proceeding with default order.');
       }
     } catch (err) {
-      this.logger.error('Error ensuring sort order:', err.message);
+      console.warn('Could not verify sort order:', err.message);
     }
   }
 
   async _ensureInboxSelected() {
-    this.logger.info('Ensuring Inbox is selected...');
     try {
-      // Check if we are already in the inbox by looking at the header or sidebar
       const inboxLink = await this.page.$('div[title="Inbox"], a[title="Inbox"]');
       if (inboxLink) {
         const isSelected = await inboxLink.evaluate(el => el.getAttribute('aria-selected') === 'true' || el.classList.contains('is-selected'));
         if (!isSelected) {
           await inboxLink.click();
-          this.logger.info('Selected Inbox from sidebar.');
-          await this.page.waitForTimeout(2000);
-        } else {
-          this.logger.info('Inbox is already selected.');
+          await delay(2000);
         }
       }
     } catch (err) {
-      this.logger.error('Error ensuring Inbox selection:', err.message);
+      console.warn('Could not verify Inbox selection:', err.message);
     }
   }
 
   async searchUncategorized() {
     console.log('Loading inbox...');
-    await this.page.goto(this.outlookUrl, { waitUntil: 'networkidle2' });
+    await this.page.goto(this.outlookUrl, { waitUntil: 'networkidle' });
     await this._waitForInbox();
     await this._ensureInboxSelected();
     await this._ensureSortOrder();
@@ -149,10 +135,11 @@ class OutlookDriver {
     let item = null;
     for (const el of allItems) {
       const hasCategory = await el.evaluate((node) => {
-        return (
-          node.querySelector('.O6uB9, [class*="category"], [class*="Category"]') !== null ||
-          (node.getAttribute('aria-label') || '').toLowerCase().includes('category')
-        );
+        const text = (node.innerText || '').toLowerCase();
+        const knownCategories = [
+          '1: needs response', '2: fyi', '3: waiting for reply', '4: done', 'serif/redraft',
+        ];
+        return knownCategories.some((c) => text.includes(c));
       }).catch(() => false);
 
       if (!hasCategory) {
@@ -182,17 +169,10 @@ class OutlookDriver {
       const { hasTarget, hasExclude } = await el
         .evaluate(
           (node, target, exclude) => {
-            const label = (node.getAttribute('aria-label') || '').toLowerCase();
-            const badgeEls = node.querySelectorAll(
-              '.O6uB9, [class*="category"], [class*="Category"]'
-            );
-            const badgeText = Array.from(badgeEls)
-              .map((b) => (b.textContent || '').toLowerCase())
-              .join(' ');
-            const allText = label + ' ' + badgeText;
+            const text = (node.innerText || '').toLowerCase();
             return {
-              hasTarget: allText.includes(target),
-              hasExclude: exclude ? allText.includes(exclude) : false,
+              hasTarget: text.includes(target),
+              hasExclude: exclude ? text.includes(exclude) : false,
             };
           },
           targetLower,
@@ -216,16 +196,17 @@ class OutlookDriver {
   async _readEmailItem(item) {
     const rowLabel = await item.getAttribute('aria-label').catch(() => '');
 
+    // UCSF Outlook Web uses .IjzWp for subject and .YmFYg/.ESO13 for sender
     let subject = await item
       .$eval(
-        '[data-testid="SubjectLine"], [title], .lvHighlightSubjectClass, span[title]',
+        '.IjzWp span',
         (n) => n.textContent?.trim() || ''
       )
       .catch(() => '');
 
     let sender = await item
       .$eval(
-        '[data-testid="SenderName"], [data-testid="PersonaName"], .lvHighlightFromClass, [aria-label*="From"]',
+        '.YmFYg span, .ESO13 span',
         (n) => n.textContent?.trim() || ''
       )
       .catch(() => '');
@@ -265,9 +246,10 @@ class OutlookDriver {
     await delay(1500);
 
     if (!subject) {
+      // span.JdFsz contains clean subject text without category badge
       subject = await this.page
         .$eval(
-          'h1, [data-testid="subject"], [data-testid="SubjectLine"], .allowTextSelection',
+          'span.JdFsz, [id*="_SUBJECT"] span[title]',
           (n) => n.textContent?.trim() || ''
         )
         .catch(() => '');
@@ -275,8 +257,7 @@ class OutlookDriver {
     if (!sender) {
       sender = await this.page
         .$eval(
-          '[data-testid="SenderName"], [data-testid="PersonaName"], ' +
-            '[aria-label^="From"], .ms-Persona-primaryText, .RecipientWell span',
+          '[aria-label^="From"], span.OZZZK, .ms-Persona-primaryText',
           (n) => n.textContent?.trim() || ''
         )
         .catch(() => '');
@@ -316,17 +297,21 @@ class OutlookDriver {
     try {
       console.log(`    Setting category: ${categoryName}...`);
 
-      // Click the Categorize button in the toolbar
-      const btnSelector =
-        'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
-      await this.page.waitForSelector(btnSelector, { timeout: 5000 });
-      await this.page.click(btnSelector);
+      // Try 'c' shortcut first, fall back to button
+      await this.page.keyboard.press('c');
       await delay(1000);
 
-      // Find and click the specific category in the dropdown menu
-      const categoryItem = await this.page.$(
-        `button[role="menuitem"] span:has-text("${categoryName}"), [role="menuitem"] [title="${categoryName}"], [role="menuitemcheckbox"]:has-text("${categoryName}")`
-      );
+      let menuPresent = await this.page.isVisible('[role="menu"]');
+      if (!menuPresent) {
+        const btnSelector = 'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
+        const btn = await this.page.$(btnSelector);
+        if (btn) await btn.click();
+        await delay(1000);
+      }
+
+      // Specific selector from subagent's findings
+      const selector = `[role="menuitemcheckbox"][title="${categoryName}"]`;
+      const categoryItem = await this.page.waitForSelector(selector, { timeout: 3000 }).catch(() => null);
 
       if (categoryItem) {
         await categoryItem.click();
@@ -358,18 +343,19 @@ class OutlookDriver {
       const action = desiredState ? 'Adding' : 'Removing';
       console.log(`    ${action} category: ${categoryName}...`);
 
-      const btnSelector =
-        'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
-      await this.page.waitForSelector(btnSelector, { timeout: 5000 });
-      await this.page.click(btnSelector);
+      await this.page.keyboard.press('c');
       await delay(1000);
 
-      // Find the category menu item (checkbox style)
-      const menuItem = await this.page.$(
-        `[role="menuitemcheckbox"]:has-text("${categoryName}"), ` +
-          `button[role="menuitem"] span:has-text("${categoryName}"), ` +
-          `[role="menuitem"] [title="${categoryName}"]`
-      );
+      let menuPresent = await this.page.isVisible('[role="menu"]');
+      if (!menuPresent) {
+        const btnSelector = 'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
+        const btn = await this.page.$(btnSelector);
+        if (btn) await btn.click();
+        await delay(1000);
+      }
+
+      const selector = `[role="menuitemcheckbox"][title="${categoryName}"], [role="menuitemcheckbox"][aria-label="${categoryName}"]`;
+      const menuItem = await this.page.waitForSelector(selector, { timeout: 3000 }).catch(() => null);
 
       if (!menuItem) {
         console.warn(`    Category "${categoryName}" not found in menu.`);
@@ -377,23 +363,14 @@ class OutlookDriver {
         return false;
       }
 
-      // Check current state via aria-checked
-      const isChecked = await menuItem
-        .evaluate((el) => {
-          const checkbox =
-            el.closest('[role="menuitemcheckbox"]') || el;
-          return checkbox.getAttribute('aria-checked') === 'true';
-        })
-        .catch(() => null);
+      const isChecked = await menuItem.getAttribute('aria-checked') === 'true';
 
       if (isChecked === desiredState) {
-        // Already in the right state
         console.log(`    Category "${categoryName}" already ${desiredState ? 'applied' : 'removed'}.`);
         await this.page.keyboard.press('Escape');
         return true;
       }
 
-      // Click to toggle
       await menuItem.click();
       console.log(`    ${desiredState ? 'Applied' : 'Removed'} category "${categoryName}"`);
       await delay(500);
@@ -429,52 +406,40 @@ class OutlookDriver {
     try {
       console.log(`    Swapping "${removeCategory}" -> "${addCategory}"...`);
 
-      const btnSelector =
-        'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
-      await this.page.waitForSelector(btnSelector, { timeout: 5000 });
-      await this.page.click(btnSelector);
+      await this.page.keyboard.press('c');
       await delay(1000);
 
-      // Uncheck the old category
-      const oldItem = await this.page.$(
-        `[role="menuitemcheckbox"]:has-text("${removeCategory}"), ` +
-          `button[role="menuitem"] span:has-text("${removeCategory}")`
-      );
+      let menuPresent = await this.page.isVisible('[role="menu"]');
+      if (!menuPresent) {
+        const btnSelector = 'button[aria-label^="Categorize"], button[name*="Categorize"], [data-testid="CategorizeButton"]';
+        const btn = await this.page.$(btnSelector);
+        if (btn) await btn.click();
+        await delay(1000);
+      }
+
+      // Uncheck old
+      const oldSelector = `[role="menuitemcheckbox"][title="${removeCategory}"], [role="menuitemcheckbox"][aria-label="${removeCategory}"]`;
+      const oldItem = await this.page.$(oldSelector);
       if (oldItem) {
-        const isChecked = await oldItem
-          .evaluate((el) => {
-            const cb = el.closest('[role="menuitemcheckbox"]') || el;
-            return cb.getAttribute('aria-checked') === 'true';
-          })
-          .catch(() => false);
+        const isChecked = await oldItem.getAttribute('aria-checked') === 'true';
         if (isChecked) {
           await oldItem.click();
-          console.log(`    Removed "${removeCategory}"`);
           await delay(500);
         }
       }
 
-      // Check the new category
-      const newItem = await this.page.$(
-        `[role="menuitemcheckbox"]:has-text("${addCategory}"), ` +
-          `button[role="menuitem"] span:has-text("${addCategory}")`
-      );
+      // Check new
+      const newSelector = `[role="menuitemcheckbox"][title="${addCategory}"], [role="menuitemcheckbox"][aria-label="${addCategory}"]`;
+      const newItem = await this.page.$(newSelector);
       if (newItem) {
-        const isChecked = await newItem
-          .evaluate((el) => {
-            const cb = el.closest('[role="menuitemcheckbox"]') || el;
-            return cb.getAttribute('aria-checked') === 'true';
-          })
-          .catch(() => false);
+        const isChecked = await newItem.getAttribute('aria-checked') === 'true';
         if (!isChecked) {
           await newItem.click();
-          console.log(`    Applied "${addCategory}"`);
           await delay(500);
         }
       }
 
-      // Close the menu
-      await this.page.keyboard.press('Escape').catch(() => {});
+      await this.page.keyboard.press('Escape');
       return true;
     } catch (err) {
       console.error(`    Error swapping categories:`, err.message);
@@ -496,17 +461,17 @@ class OutlookDriver {
 
       for (const sel of selectors) {
         const btn = await this.page.$(sel);
-        if (btn) {
+        if (btn && await btn.isVisible()) {
           await btn.click();
           await delay(500);
           return true;
         }
       }
 
-      // Fallback: use keyboard shortcut (Ctrl+U marks as unread in Outlook Web)
-      await this.page.keyboard.down('Control');
-      await this.page.keyboard.press('u');
-      await this.page.keyboard.up('Control');
+      // Shortcut: Shift + U
+      await this.page.keyboard.down('Shift');
+      await this.page.keyboard.press('U');
+      await this.page.keyboard.up('Shift');
       return true;
     } catch (err) {
       console.error('Could not mark as unread:', err.message);
