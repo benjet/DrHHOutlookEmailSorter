@@ -101,19 +101,40 @@ class OutlookDriver {
     if (!item) return null;
 
     // Extract metadata from the list item before clicking
-    const subject = await item
+    // On some versions of Outlook, the row itself has an aria-label with the info
+    const rowLabel = await item.getAttribute('aria-label').catch(() => '');
+    
+    let subject = await item
       .$eval(
-        '[data-testid="SubjectLine"], [title], .lvHighlightSubjectClass',
+        '[data-testid="SubjectLine"], [title], .lvHighlightSubjectClass, span[title]',
         (n) => n.textContent?.trim() || ''
       )
       .catch(() => '');
 
-    const sender = await item
+    let sender = await item
       .$eval(
-        '[data-testid="SenderName"], .lvHighlightFromClass, [aria-label*="From"]',
+        '[data-testid="SenderName"], [data-testid="PersonaName"], .lvHighlightFromClass, [aria-label*="From"]',
         (n) => n.textContent?.trim() || ''
       )
       .catch(() => '');
+
+    // Fallback parsing from aria-label if selectors failed
+    if (!sender && rowLabel) {
+      const match = rowLabel.match(/From (.*?);/i) || rowLabel.match(/From (.*?),/i) || rowLabel.match(/From (.*?)\./i);
+      if (match) sender = match[1].trim();
+    }
+    if (!subject && rowLabel) {
+      const match = rowLabel.match(/Subject (.*?);/i) || rowLabel.match(/Subject (.*?)\./i);
+      if (match) subject = match[1].trim();
+    }
+
+    // Ultimate fallback from innerText
+    if (!sender || !subject) {
+      const text = await item.innerText().catch(() => '');
+      const parts = text.split('\n').filter(p => p.trim().length > 2);
+      if (!sender && parts.length > 0) sender = parts[0].trim();
+      if (!subject && parts.length > 1) subject = parts[1].trim();
+    }
 
     const isUnread = await item
       .evaluate((node) => {
@@ -127,7 +148,26 @@ class OutlookDriver {
 
     // Open the email to read full body
     await item.click();
-    await delay(1000);
+    await delay(1500);
+
+    // After the reading pane loads, extract subject/sender from it (more reliable than list DOM)
+    if (!subject) {
+      subject = await this.page
+        .$eval(
+          'h1, [data-testid="subject"], [data-testid="SubjectLine"], .allowTextSelection',
+          (n) => n.textContent?.trim() || ''
+        )
+        .catch(() => '');
+    }
+    if (!sender) {
+      sender = await this.page
+        .$eval(
+          '[data-testid="SenderName"], [data-testid="PersonaName"], ' +
+          '[aria-label^="From"], .ms-Persona-primaryText, .RecipientWell span',
+          (n) => n.textContent?.trim() || ''
+        )
+        .catch(() => '');
+    }
 
     let content = '';
     try {
