@@ -5,7 +5,11 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dry-run": "cross-env DRY_RUN=true node src/index.js"
+    "dry-run": "cross-env DRY_RUN=true node src/index.js",
+    "verify": "node src/verify.js",
+    "verify:dry": "cross-env DRY_RUN=true node src/verify.js",
+    "catch-missed": "node src/catch-missed.js",
+    "catch-missed:dry": "cross-env DRY_RUN=true node src/catch-missed.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
