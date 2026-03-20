@@ -14,7 +14,7 @@ async function main() {
     logger.info(`Max messages: ${config.maxMessages}\n`);
 
     await driver.init();
-    await driver.searchUncategorized();
+    await driver.searchUncategorized(); // loads inbox; uncategorized filtering is done per-email
 
     let processedCount = 0;
 

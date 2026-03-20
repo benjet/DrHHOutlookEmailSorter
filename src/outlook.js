@@ -64,26 +64,40 @@ class OutlookDriver {
   }
 
   /**
-   * Search inbox for uncategorized emails.
+   * Ensure we're viewing the inbox (no search filter needed).
    */
   async searchUncategorized() {
-    console.log('Searching for uncategorized emails...');
-    const searchSelector = 'input[aria-label="Search"], #topSearchInput';
-    await this.page.waitForSelector(searchSelector, { timeout: 10000 });
-    await this.page.click(searchSelector);
-    await this.page.fill(searchSelector, 'category:none');
-    await this.page.keyboard.press('Enter');
-    // Wait for results to load
-    await delay(3000);
+    console.log('Loading inbox...');
+    await this.page.goto(this.outlookUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await this._waitForInbox();
   }
 
   /**
-   * Get the next email from the message list, open it, and return its details.
-   * Returns null if no emails are found.
+   * Find the next uncategorized email in the list, open it, and return its details.
+   * Skips any emails that already have a category badge.
+   * Returns null if no uncategorized emails are found.
    */
   async getNextEmail() {
-    const itemSelector = 'div[role="option"]';
-    const item = await this.page.$(itemSelector);
+    const allItems = await this.page.$$('div[role="option"]');
+    if (!allItems.length) return null;
+
+    // Find the first item with no category badge
+    let item = null;
+    for (const el of allItems) {
+      const hasCategory = await el.evaluate((node) => {
+        // Outlook renders category badges as colored tags in the list item
+        return (
+          node.querySelector('.O6uB9, [class*="category"], [class*="Category"]') !== null ||
+          (node.getAttribute('aria-label') || '').toLowerCase().includes('category')
+        );
+      }).catch(() => false);
+
+      if (!hasCategory) {
+        item = el;
+        break;
+      }
+    }
+
     if (!item) return null;
 
     // Extract metadata from the list item before clicking
