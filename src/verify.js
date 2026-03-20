@@ -1,4 +1,4 @@
-const OutlookDriver = require('./outlook');
+const { createDriver } = require('./driver');
 const config = require('./config');
 const { verifyNeedsResponse } = require('./classifier');
 const logger = require('./logger');
@@ -6,7 +6,7 @@ const logger = require('./logger');
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  const driver = new OutlookDriver();
+  const driver = createDriver();
 
   try {
     logger.info('Starting DrHH Verify ("1: Needs Response" double-check)...');
@@ -32,7 +32,7 @@ async function main() {
 
       // Re-evaluate with Gemini AI
       logger.info('Verifying classification...');
-      const newCategory = await verifyNeedsResponse({
+      const { category: newCategory, confidence, reasoning } = await verifyNeedsResponse({
         subject: email.subject,
         sender: email.sender,
         content: email.content,
@@ -44,7 +44,7 @@ async function main() {
           subject: email.subject,
           sender: email.sender,
           category: '1: Needs Response',
-          reason: 'Correctly categorized (or ambiguous)',
+          reason: reasoning || 'Correctly categorized (or ambiguous)',
         });
 
         if (email.isUnread) await driver.markAsUnread();

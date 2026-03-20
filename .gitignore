@@ -3,5 +3,6 @@ browser-data*/
 logs/
 .env
 config.json
+.graph-token-cache.json
 *.md
 !README.md

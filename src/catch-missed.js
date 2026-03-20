@@ -1,4 +1,4 @@
-const OutlookDriver = require('./outlook');
+const { createDriver } = require('./driver');
 const config = require('./config');
 const { detectMissedResponse } = require('./classifier');
 const logger = require('./logger');
@@ -6,7 +6,7 @@ const logger = require('./logger');
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  const driver = new OutlookDriver();
+  const driver = createDriver();
 
   try {
     logger.info('Starting DrHH Catch Missed Responses...');
@@ -36,7 +36,7 @@ async function main() {
 
       // Check if Dr. HH missed responding
       logger.info('Checking for missed response...');
-      const isMissed = await detectMissedResponse({
+      const { isMissed, confidence, reasoning } = await detectMissedResponse({
         subject: email.subject,
         sender: email.sender,
         content: email.content,
@@ -48,7 +48,7 @@ async function main() {
           subject: email.subject,
           sender: email.sender,
           category: '1: Needs Response',
-          reason: 'No missed response detected',
+          reason: reasoning || 'No missed response detected',
         });
 
         if (email.isUnread) await driver.markAsUnread();

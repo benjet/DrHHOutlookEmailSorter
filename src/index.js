@@ -1,4 +1,4 @@
-const OutlookDriver = require('./outlook');
+const { createDriver } = require('./driver');
 const config = require('./config');
 const { classify } = require('./classifier');
 const logger = require('./logger');
@@ -6,7 +6,7 @@ const logger = require('./logger');
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  const driver = new OutlookDriver();
+  const driver = createDriver();
 
   try {
     logger.info('Starting DrHH Email Sorter...');
@@ -33,19 +33,19 @@ async function main() {
 
       // Classify with Gemini AI
       logger.info('Classifying...');
-      const category = await classify({
+      const { category, confidence, reasoning } = await classify({
         subject: email.subject,
         sender: email.sender,
         content: email.content,
       });
 
-      if (category === 'Unknown') {
+      if (category === 'Uncategorized' || !category) {
         logger.log({
           action: 'skip',
           subject: email.subject,
           sender: email.sender,
           category: null,
-          reason: 'Low confidence or ambiguous',
+          reason: reasoning || 'Low confidence or ambiguous',
         });
 
         if (email.isUnread) await driver.markAsUnread();
@@ -55,7 +55,8 @@ async function main() {
         continue;
       }
 
-      logger.info(`Category: ${category}`);
+      logger.info(`Category: ${category} (Confidence: ${confidence})`);
+      if (reasoning) logger.info(`Reasoning: ${reasoning}`);
 
       if (config.dryRun) {
         logger.log({
